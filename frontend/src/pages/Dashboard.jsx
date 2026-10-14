@@ -193,37 +193,62 @@ function Dashboard() {
     // reset input so same file can be selected again
     e.target.value = "";
 
-    if (!window.confirm(`هل أنت متأكد من استيراد البيانات من الملف: "${file.name}"؟\nالبيانات الموجودة ستُحدَّث والجديدة ستُضاف.`)) return;
-
-    setRestoreLoading(true);
-    setRestoreMsg("");
     try {
+      setRestoreLoading(true);
+      setRestoreMsg("");
+
+      // 1. قراءة الملف مسبقاً في المتصفح والتأكد من صحة الجيسون
+      const fileText = await file.text();
+      let parsedData;
+      try {
+        parsedData = JSON.parse(fileText);
+      } catch (jsonErr) {
+        setRestoreMsg("❌ الملف المختار ليس ملف JSON صالح");
+        setRestoreLoading(false);
+        return;
+      }
+
+      const certs = Array.isArray(parsedData) ? parsedData : (parsedData.certificates || [parsedData]);
+      if (!Array.isArray(certs) || certs.length === 0) {
+        setRestoreMsg("❌ لا توجد بيانات شهادات صالحة داخل الملف");
+        setRestoreLoading(false);
+        return;
+      }
+
+      if (!window.confirm(`تم العثور على ${certs.length} شهادة في الملف: "${file.name}".\nهل أنت متأكد من استيرادها الآن؟\nالبيانات الموجودة ستُحدَّث والجديدة ستُضاف.`)) {
+        setRestoreLoading(false);
+        return;
+      }
+
+      setRestoreMsg(`⏳ جاري استيراد ${certs.length} شهادة...`);
+
       let successMessage = "";
 
-      // 1. First attempt: call backend API endpoint
+      // 2. المحاولة الأولى: إرسال كـ JSON Body مباشر (أسرع وأدق وأكثر استقراراً)
       try {
-        const formData = new FormData();
-        formData.append("file", file);
-
-        const res = await axios.post(`${API_URL}/api/certificates-restore`, formData, {
+        const res = await axios.post(`${API_URL}/api/certificates-restore`, { certificates: certs }, {
           headers: {
             Authorization: `Bearer ${token}`,
-            "Content-Type": "multipart/form-data",
+            "Content-Type": "application/json",
           },
         });
+        successMessage = res.data?.message || `تم استيراد ${certs.length} شهادة بنجاح`;
+      } catch (firstErr) {
+        // 3. المحاولة الثانية: إرسال عبر FormData (رفع ملف)
+        try {
+          const formData = new FormData();
+          formData.append("file", file);
 
-        successMessage = res.data?.message || "تم استيراد البيانات بنجاح";
-      } catch (apiErr) {
-        // 2. Fallback: if backend endpoint returns 404 or fails, parse JSON directly
-        if (apiErr.response?.status === 404 || !apiErr.response) {
-          const text = await file.text();
-          const parsed = JSON.parse(text);
-          const certs = Array.isArray(parsed) ? parsed : (parsed.certificates || [parsed]);
+          const res = await axios.post(`${API_URL}/api/certificates-restore`, formData, {
+            headers: {
+              Authorization: `Bearer ${token}`,
+              "Content-Type": "multipart/form-data",
+            },
+          });
 
-          if (!Array.isArray(certs) || certs.length === 0) {
-            throw new Error("الملف لا يحتوي على بيانات شهادات صالحة");
-          }
-
+          successMessage = res.data?.message || `تم استيراد ${certs.length} شهادة بنجاح`;
+        } catch (secondErr) {
+          // 4. Fallback: استيراد الشهادات واحدة تلو الأخرى إذا كان الاندبوينت غير متاح
           let importedCount = 0;
           for (const cert of certs) {
             try {
@@ -248,6 +273,7 @@ function Dashboard() {
                 selectedLogo: cert.selectedLogo,
                 photoUrl: cert.photoUrl,
                 isLocked: cert.isLocked,
+                _id: cert._id,
                 customId: cert._id,
               };
 
@@ -272,9 +298,10 @@ function Dashboard() {
             }
           }
 
+          if (importedCount === 0) {
+            throw new Error(secondErr.response?.data?.message || firstErr.response?.data?.message || "فشل استيراد الشهادات");
+          }
           successMessage = `تم استيراد ${importedCount} شهادة بنجاح`;
-        } else {
-          throw apiErr;
         }
       }
 

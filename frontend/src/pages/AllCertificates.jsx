@@ -49,7 +49,8 @@ const AllCertificates = () => {
       }
 
       // تحميل الملف
-      const url = window.URL.createObjectURL(new Blob([res.data], { type: "application/json" }));
+      const finalBlob = blobData instanceof Blob ? blobData : new Blob([blobData], { type: "application/json" });
+      const url = window.URL.createObjectURL(finalBlob);
       const link = document.createElement("a");
       link.href = url;
       link.setAttribute("download", filename);

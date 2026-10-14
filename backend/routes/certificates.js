@@ -350,57 +350,65 @@ router.post('/certificates-restore', authMiddleware, jsonUpload.single('file'), 
 
     let count = 0;
     for (const item of certs) {
-      const updateData = { ...item };
-      const customId = updateData._id;
-      delete updateData._id; // MongoDB does not allow updating immutable field _id
+      try {
+        const updateData = { ...item };
+        const customId = updateData._id;
+        delete updateData._id; // MongoDB immutable field
+        delete updateData.__v;
 
-      // Parse dates if present
-      if (updateData.healthCertIssueDate) updateData.healthCertIssueDate = new Date(updateData.healthCertIssueDate);
-      if (updateData.healthCertExpiryDate) updateData.healthCertExpiryDate = new Date(updateData.healthCertExpiryDate);
-      if (updateData.educationalProgramEndDate && !isNaN(new Date(updateData.educationalProgramEndDate))) {
-        updateData.educationalProgramEndDate = new Date(updateData.educationalProgramEndDate);
-      }
+        // Parse dates safely
+        if (updateData.healthCertIssueDate) {
+          const d = new Date(updateData.healthCertIssueDate);
+          updateData.healthCertIssueDate = !isNaN(d) ? d : null;
+        }
+        if (updateData.healthCertExpiryDate) {
+          const d = new Date(updateData.healthCertExpiryDate);
+          updateData.healthCertExpiryDate = !isNaN(d) ? d : null;
+        }
+        if (updateData.educationalProgramEndDate) {
+          const d = new Date(updateData.educationalProgramEndDate);
+          updateData.educationalProgramEndDate = !isNaN(d) ? d : null;
+        }
 
-      let filter = null;
-      if (customId && mongoose.Types.ObjectId.isValid(customId)) {
-        filter = { _id: new mongoose.Types.ObjectId(customId) };
-      } else if (updateData.uuid) {
-        filter = { uuid: updateData.uuid };
-      } else if (updateData.healthCertificateNumber) {
-        filter = { healthCertificateNumber: updateData.healthCertificateNumber };
-      }
-
-      if (filter) {
-        const setOnInsert = {};
+        // Search for existing certificate by:
+        // 1. _id (if valid ObjectId)
+        // 2. uuid
+        // 3. healthCertificateNumber
+        let existing = null;
         if (customId && mongoose.Types.ObjectId.isValid(customId)) {
-          setOnInsert._id = new mongoose.Types.ObjectId(customId);
+          existing = await Certificate.findById(new mongoose.Types.ObjectId(customId));
         }
-        if (!updateData.uuid) {
-          setOnInsert.uuid = require('crypto').randomBytes(8).toString('hex');
+        if (!existing && updateData.uuid) {
+          existing = await Certificate.findOne({ uuid: updateData.uuid });
+        }
+        if (!existing && updateData.healthCertificateNumber) {
+          existing = await Certificate.findOne({ healthCertificateNumber: updateData.healthCertificateNumber });
         }
 
-        await Certificate.findOneAndUpdate(
-          filter,
-          { 
-            $set: updateData,
-            $setOnInsert: setOnInsert
-          },
-          { upsert: true, new: true }
-        );
-      } else {
-        if (customId && mongoose.Types.ObjectId.isValid(customId)) {
-          updateData._id = new mongoose.Types.ObjectId(customId);
+        if (existing) {
+          // Update existing document
+          for (const key of Object.keys(updateData)) {
+            existing[key] = updateData[key];
+          }
+          await existing.save();
+        } else {
+          // Create new record with original _id if valid
+          if (customId && mongoose.Types.ObjectId.isValid(customId)) {
+            updateData._id = new mongoose.Types.ObjectId(customId);
+          }
+          if (!updateData.uuid) {
+            updateData.uuid = require('crypto').randomBytes(8).toString('hex');
+          }
+          const newDoc = new Certificate(updateData);
+          await newDoc.save();
         }
-        if (!updateData.uuid) {
-          updateData.uuid = require('crypto').randomBytes(8).toString('hex');
-        }
-        const newCert = new Certificate(updateData);
-        await newCert.save();
+        count++;
+      } catch (itemErr) {
+        console.error('Error importing single certificate:', item?.name || item?._id, itemErr.message);
       }
-      count++;
     }
 
-    res.json({ success: true, count, message: `تم استيراد ${count} شهادة بنجاح` });
+    res.json({ success: true, count, total: certs.length, message: `تم استيراد واسترجاع ${count} شهادة بنجاح` });
   } catch (err) {
     console.error('Restore error:', err);
     res.status(500).json({ message: 'حدث خطأ أثناء استيراد البيانات', detail: err.message });
