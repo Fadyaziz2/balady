@@ -39,6 +39,7 @@ function AddCertificate() {
   const eduHijriStr = `${parseInt(hYear) + 3}-${hMonth}-${hDay}`;    // 1450-08-05
 
   const [form, setForm] = useState({
+    _id: "",
     customId: "",
     name: "",
     amana: "",
@@ -60,10 +61,57 @@ function AddCertificate() {
     selectedLogo: "logos/الرياض.png",
   });
 
+  const [idStatus, setIdStatus] = useState({ checking: false, message: "", isError: false, isValidHex: false });
   const [photo, setPhoto] = useState(null);
   const [municipalities, setMunicipalities] = useState([]);
   const [isManualBaladiya, setIsManualBaladiya] = useState(false);
   const [manualBaladiya, setManualBaladiya] = useState("");
+
+  // فحص صحة الآيدي وعدم تكراره في قاعدة البيانات
+  const handleIdValidation = async (value) => {
+    const trimmed = (value || "").trim();
+    if (!trimmed) {
+      setIdStatus({ checking: false, message: "", isError: false, isValidHex: false });
+      return;
+    }
+
+    // 1. التحقق من الطول
+    if (trimmed.length !== 24) {
+      setIdStatus({
+        checking: false,
+        message: `طول الآيدي ${trimmed.length} من 24 خانة. (يجب أن يكون 24 خانة بالضبط)`,
+        isError: true,
+        isValidHex: false
+      });
+      return;
+    }
+
+    // 2. التحقق من أحرف الهيكسا
+    if (!/^[0-9a-fA-F]{24}$/.test(trimmed)) {
+      setIdStatus({
+        checking: false,
+        message: "الآيدي غير صالح: يجب أن يحتوي فقط على أرقام وحروف Hexadecimal (من 0-9 و a-f)",
+        isError: true,
+        isValidHex: false
+      });
+      return;
+    }
+
+    // 3. الصيغة هيكسا صحيحة 100% -> فحص عدم التكرار مع السيرفر
+    setIdStatus({ checking: true, message: "جاري التحقق من عدم التكرار في قاعدة البيانات...", isError: false, isValidHex: true });
+    try {
+      const res = await axios.get(`${API_URL}/api/certificates/check-id/${trimmed}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (res.data.available) {
+        setIdStatus({ checking: false, message: "✅ الآيدي هيكسا صالح ومتاح للاستخدام (غير مكرر)", isError: false, isValidHex: true });
+      } else {
+        setIdStatus({ checking: false, message: `❌ ${res.data.message}`, isError: true, isValidHex: true });
+      }
+    } catch (err) {
+      setIdStatus({ checking: false, message: "✅ صيغة الآيدي صحيحة (24 خانة Hexadecimal)", isError: false, isValidHex: true });
+    }
+  };
 
   // Auto-fill next sequential health certificate number
   useEffect(() => {
@@ -81,13 +129,13 @@ function AddCertificate() {
     fetchNextNumber();
   }, []);
 
-  /* 
-   * تم نقل خريطة اللوجو إلى baladyData.js
-   * يتم الآن استدعاء اللوجو مباشرة من الكائن baladyData
-   */
-
   const handleChange = (e) => {
     const { name, value } = e.target;
+    if (name === "_id" || name === "customId") {
+      setForm({ ...form, _id: value, customId: value });
+      handleIdValidation(value);
+      return;
+    }
     if (name === "baladiya") {
       if (value === "OTHER") {
         setIsManualBaladiya(true);
@@ -184,13 +232,18 @@ function AddCertificate() {
         formData.append("photo", photo);
       }
 
-      if (form.customId && form.customId.trim()) {
-        const cleanId = form.customId.trim();
-        if (!/^[0-9a-fA-F]{24}$/.test(cleanId)) {
-          alert("الآيدي غير صالح: يجب أن يكون 24 حرفاً (Hexadecimal) كمعرف MongoDB ObjectId صالح");
+      const rawId = (form._id || form.customId || "").trim();
+      if (rawId) {
+        if (rawId.length !== 24 || !/^[0-9a-fA-F]{24}$/.test(rawId)) {
+          alert("الآيدي غير صالح: يجب أن يكون مكوناً من 24 خانة بنظام Hexadecimal (أرقام 0-9 وحروف a-f).");
           return;
         }
-        formData.append("customId", cleanId);
+        if (idStatus.isError && idStatus.message.includes("مستخدم بالفعل")) {
+          alert("الآيدي مكرر بالفعل ومسجل لشهادة أخرى في قاعدة البيانات. يرجى اختيار آيدي مختلف.");
+          return;
+        }
+        formData.append("_id", rawId);
+        formData.append("customId", rawId);
       }
 
       const res = await axios.post(
@@ -222,15 +275,60 @@ function AddCertificate() {
 
       <form className="add-certificate-form" onSubmit={handleSubmit}>
 
-        <div>
-          <label>الآيدي (MongoDB _id - اختياري)</label>
+        <div style={{
+          gridColumn: '1 / -1',
+          background: idStatus.isError ? '#fef2f2' : (idStatus.isValidHex && !idStatus.isError ? '#f0fdf4' : '#f8fafc'),
+          padding: '16px 20px',
+          borderRadius: '10px',
+          border: `1.5px solid ${idStatus.isError ? '#f87171' : (idStatus.isValidHex && !idStatus.isError ? '#4ade80' : '#e2e8f0')}`,
+          transition: 'all 0.3s ease',
+          marginBottom: '5px'
+        }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+            <label style={{ margin: 0, fontWeight: '700', color: '#1e293b', fontSize: '14px' }}>
+              معرف الشهادة في قاعدة البيانات (_id) - اختياري
+            </label>
+            <span style={{
+              fontSize: '12px',
+              color: (form._id || form.customId || '').trim().length === 24 ? '#16a34a' : '#64748b',
+              fontWeight: '700',
+              direction: 'ltr'
+            }}>
+              {((form._id || form.customId || '').trim().length)} / 24 hex
+            </span>
+          </div>
           <input
             type="text"
-            name="customId"
-            value={form.customId}
+            name="_id"
+            value={form._id || form.customId || ""}
             onChange={handleChange}
-            placeholder="معرف ObjectId مكون من 24 حرفاً (اختياري)"
+            placeholder="مثال: 6512bd349f82d10a23b49102 (24 خانة Hexadecimal - اتركه فارغاً لإنشاء آيدي تلقائي)"
+            maxLength={24}
+            style={{
+              direction: 'ltr',
+              textAlign: 'left',
+              fontFamily: 'monospace',
+              letterSpacing: '1px',
+              fontSize: '14px',
+              border: `1.5px solid ${idStatus.isError ? '#ef4444' : (idStatus.isValidHex && !idStatus.isError ? '#22c55e' : '#cbd5e1')}`,
+              backgroundColor: '#ffffff'
+            }}
           />
+          {idStatus.message && (
+            <div style={{
+              marginTop: '6px',
+              fontSize: '13px',
+              fontWeight: '600',
+              color: idStatus.isError ? '#dc2626' : '#16a34a'
+            }}>
+              {idStatus.checking ? '⏳ ' : ''}{idStatus.message}
+            </div>
+          )}
+          {!idStatus.message && (
+            <span style={{ fontSize: '12px', color: '#64748b', marginTop: '4px' }}>
+              💡 خانة اختيارية: إذا تُركت فارغة، سيقوم MongoDB بإنشاء _id عشوائي فريد تلقائياً.
+            </span>
+          )}
         </div>
 
         <div>
